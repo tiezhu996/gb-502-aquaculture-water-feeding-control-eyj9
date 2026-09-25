@@ -14,13 +14,14 @@ import (
 )
 
 type Handlers struct {
-	Auth       *handler.AuthHandler
-	Health     *handler.HealthHandler
-	Ponds      *handler.PondHandler
-	Readings   *handler.ReadingHandler
-	Plans      *handler.PlanHandler
-	Executions *handler.ExecutionHandler
-	Audit      *handler.AuditHandler
+	Auth        *handler.AuthHandler
+	Health      *handler.HealthHandler
+	Ponds       *handler.PondHandler
+	Readings    *handler.ReadingHandler
+	Plans       *handler.PlanHandler
+	Executions  *handler.ExecutionHandler
+	FeedBatches *handler.FeedBatchHandler
+	Audit       *handler.AuditHandler
 }
 
 func New(cfg config.Config, redisClient *redis.Client, auth *service.AuthService, h Handlers) *gin.Engine {
@@ -88,6 +89,16 @@ func New(cfg config.Config, redisClient *redis.Client, auth *service.AuthService
 	executionWrite.PUT("/:id", h.Executions.Update)
 	executionWrite.PATCH("/:id/complete", h.Executions.Complete)
 	executionWrite.DELETE("/:id", h.Executions.Delete)
+
+	protected.GET("/feed-batches", h.FeedBatches.List)
+	protected.GET("/feed-batches/available", h.FeedBatches.Available)
+	protected.GET("/feed-batches/:id", h.FeedBatches.Get)
+	feedBatchWrite := protected.Group("/feed-batches")
+	feedBatchWrite.Use(middleware.RequireRoles("admin", "manager"))
+	feedBatchWrite.POST("", h.FeedBatches.Create)
+	feedBatchWrite.PUT("/:id", h.FeedBatches.Update)
+	feedBatchWrite.PATCH("/:id/enabled", h.FeedBatches.SetEnabled)
+	feedBatchWrite.DELETE("/:id", h.FeedBatches.Delete)
 
 	audit := protected.Group("/audit")
 	audit.Use(middleware.RequireRoles("admin", "manager"))

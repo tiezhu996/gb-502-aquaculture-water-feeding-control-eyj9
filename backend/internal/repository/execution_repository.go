@@ -34,13 +34,13 @@ func (r *ExecutionRepository) List(query dto.PageQuery, pondID, planID uint) ([]
 		return nil, 0, err
 	}
 	var executions []model.ControlExecution
-	err := base.Preload("Pond").Preload("FeedingPlan").Order("scheduled_at DESC").Offset((query.Page - 1) * query.PageSize).Limit(query.PageSize).Find(&executions).Error
+	err := base.Preload("Pond").Preload("FeedingPlan").Preload("Consumptions").Preload("Consumptions.FeedBatch").Order("scheduled_at DESC").Offset((query.Page - 1) * query.PageSize).Limit(query.PageSize).Find(&executions).Error
 	return executions, total, err
 }
 
 func (r *ExecutionRepository) Get(id uint) (model.ControlExecution, error) {
 	var execution model.ControlExecution
-	err := r.db.Preload("Pond").Preload("FeedingPlan").First(&execution, id).Error
+	err := r.db.Preload("Pond").Preload("FeedingPlan").Preload("Consumptions").Preload("Consumptions.FeedBatch").First(&execution, id).Error
 	return execution, err
 }
 

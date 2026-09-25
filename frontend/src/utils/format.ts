@@ -5,6 +5,13 @@ export function formatDateTime(value?: string): string {
   }).format(new Date(value))
 }
 
+export function formatDate(value?: string): string {
+  if (!value) return '—'
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date(value))
+}
+
 export function toLocalInput(value = new Date()): string {
   const date = new Date(value)
   date.setMinutes(date.getMinutes() - date.getTimezoneOffset())

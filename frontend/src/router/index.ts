@@ -13,6 +13,7 @@ const router = createRouter({
         { path: 'readings', component: () => import('@/pages/ReadingsPage.vue') },
         { path: 'plans', component: () => import('@/pages/PlansPage.vue') },
         { path: 'executions', component: () => import('@/pages/ExecutionsPage.vue') },
+        { path: 'feed-batches', component: () => import('@/pages/FeedBatchesPage.vue') },
         { path: 'audit', component: () => import('@/pages/AuditPage.vue'), meta: { roles: ['admin', 'manager'] satisfies UserRole[] } },
       ],
     },

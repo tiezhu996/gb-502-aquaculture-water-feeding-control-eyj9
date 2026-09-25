@@ -31,6 +31,8 @@ func Open(databaseURL, environment string) (*gorm.DB, error) {
 		&model.WaterReading{},
 		&model.FeedingPlan{},
 		&model.ControlExecution{},
+		&model.FeedBatch{},
+		&model.FeedConsumption{},
 		&model.AuditLog{},
 	); err != nil {
 		return nil, fmt.Errorf("migrate database: %w", err)
@@ -81,6 +83,28 @@ func seed(db *gorm.DB) error {
 			return err
 		}
 		log.Printf("seeded %d ponds", len(ponds))
+	}
+	var batchCount int64
+	if err := db.Model(&model.FeedBatch{}).Count(&batchCount).Error; err != nil {
+		return err
+	}
+	if batchCount == 0 {
+		today := time.Now().UTC()
+		day := func(offsetDays int) time.Time {
+			value := today.AddDate(0, 0, offsetDays)
+			return time.Date(value.Year(), value.Month(), value.Day(), 0, 0, 0, 0, time.UTC)
+		}
+		batches := []model.FeedBatch{
+			{BatchNo: "FB-2026-0901", FeedType: "对虾配合饲料", InboundKg: 500, ExpireDate: day(25), Enabled: true, Notes: "东区主用，先到期先出"},
+			{BatchNo: "FB-2026-0902", FeedType: "对虾配合饲料", InboundKg: 800, ExpireDate: day(120), Enabled: true, Notes: "储备批次"},
+			{BatchNo: "FB-2026-0801", FeedType: "对虾配合饲料", InboundKg: 120, ExpireDate: day(-10), Enabled: true, Notes: "已过期批次，用于拦截演示"},
+			{BatchNo: "FB-2026-0903", FeedType: "鱼用膨化饲料", InboundKg: 400, ExpireDate: day(60), Enabled: true, Notes: "加州鲈鱼专用"},
+			{BatchNo: "FB-2026-0701", FeedType: "鱼用膨化饲料", InboundKg: 200, ExpireDate: day(90), Enabled: false, Notes: "停用批次，等待供应商换货"},
+		}
+		if err := db.Create(&batches).Error; err != nil {
+			return err
+		}
+		log.Printf("seeded %d feed batches", len(batches))
 	}
 	return nil
 }

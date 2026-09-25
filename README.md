@@ -9,6 +9,7 @@
 - 投喂计划：草稿修订自动升版，支持提交、批准和撤销；批准时会校验水质与溶解氧阈值。
 - 投喂建议：结合已批准计划、24 小时内水质、天气和生长阶段，输出正常投喂、减量或暂停。
 - 执行反馈：仅允许已批准计划进入执行，记录实际量、现场溶解氧与反馈。
+- 饲料批次台账：登记批号、类型、入库量、到期日与启用状态；执行完成时按先到期先出（FEFO）从同类型启用批次扣减实际用量，并保留逐批次消耗明细。
 - 安全与审计：JWT、RBAC、请求 ID、全局异常恢复、Redis 限流和实体变更前后快照。
 
 ## 快速启动
@@ -52,8 +53,9 @@ docker compose down
 2. 在“水质读数”录入当前指标；如判定异常，先进行现场复核和确认。
 3. 在“投喂计划”创建草稿并提交，主管检查最新水质后批准。
 4. 已批准计划可输入天气窗口生成实时投喂建议。
-5. 在“执行反馈”安排、开始并提交实际结果。完成后计划进入 `executed`。
-6. 管理员或主管可在“操作审计”查看人员、原因、请求 ID 和变更快照。
+5. 在“执行反馈”安排、开始并提交实际结果。完成时系统校验饲料批次并按先到期先出扣减，完成后计划进入 `executed`。
+6. 在“饲料批次”维护批号/类型/入库量/到期日/启用状态，点击批号可查看该批次的关联投喂明细。
+7. 管理员或主管可在“操作审计”查看人员、原因、请求 ID 和变更快照。
 
 ## 项目结构
 
@@ -71,7 +73,7 @@ docker compose down
 │   ├── api/ stores/ types/       # 请求层、Pinia 状态与类型
 │   ├── components/common/       # 共享工作台组件
 │   ├── hooks/ router/ utils/     # 权限、查询参数、守卫和工具
-│   └── pages/                   # 五个业务页与登录页
+│   └── pages/                   # 六个业务页与登录页
 └── docker-compose.yml
 ```
 
@@ -92,6 +94,7 @@ docker compose down
 | `WaterReading` | `model/water_reading.go` | `dto/reading.go` | `repository/reading_repository.go` | `service/reading_service.go` | `handler/reading_handler.go` | `api/readings.ts` | `pages/ReadingsPage.vue` |
 | `FeedingPlan` | `model/feeding_plan.go` | `dto/plan.go` | `repository/plan_repository.go` | `service/plan_service.go` | `handler/plan_handler.go` | `api/plans.ts` | `pages/PlansPage.vue` |
 | `ControlExecution` | `model/control_execution.go` | `dto/execution.go` | `repository/execution_repository.go` | `service/execution_service.go` | `handler/execution_handler.go` | `api/executions.ts` | `pages/ExecutionsPage.vue` |
+| `FeedBatch` / `FeedConsumption` | `model/feed_batch.go`、`model/feed_consumption.go` | `dto/feed_batch.go` | `repository/feed_batch_repository.go`、`repository/feed_consumption_repository.go` | `service/feed_batch_service.go`、`service/feed_allocation.go` | `handler/feed_batch_handler.go` | `api/feedBatches.ts` | `pages/FeedBatchesPage.vue`（执行页展示本批剩余与消耗明细） |
 
 `RiskTag` 在养殖池和水质页共用，`PlanDrawer` 在计划和执行页共用。`StatusBadge`、`MetricCard`、`ConfirmDialog` 位于 `frontend/src/components/common/`；`useAuth`、`useQueryParams` 位于 `frontend/src/hooks/`。
 
@@ -109,7 +112,12 @@ docker compose down
 | `PATCH` | `/api/plans/:id/revoke` | 撤销待审或已批准计划 |
 | `GET` | `/api/plans/recommendation?pondId=1&weather=晴朗` | 生成投喂建议 |
 | `GET/POST` | `/api/executions` | 执行记录列表/安排 |
-| `PATCH` | `/api/executions/:id/complete` | 提交实际数量与反馈 |
+| `PATCH` | `/api/executions/:id/complete` | 提交实际数量与反馈，按 FEFO 扣减饲料批次 |
+| `GET/POST` | `/api/feed-batches` | 饲料批次列表/登记（写操作限管理员、主管） |
+| `GET` | `/api/feed-batches/available?feedType=对虾配合饲料` | 查询某类型启用且未过期批次剩余（先到期先出） |
+| `GET` | `/api/feed-batches/:id` | 批次详情与关联投喂消耗明细 |
+| `PUT/PATCH` | `/api/feed-batches/:id`、`/api/feed-batches/:id/enabled` | 编辑台账、切换启用状态 |
+| `DELETE` | `/api/feed-batches/:id` | 删除尚无消耗的批次 |
 | `GET` | `/api/audit` | 管理员/主管查看审计记录 |
 
 错误统一为 `{"error":{"code":"...","message":"...","requestId":"..."}}`，响应头同时包含 `X-Request-ID`。
@@ -147,4 +155,8 @@ docker compose config --quiet
 - 计划批准需要运行中养殖池和最新水质，溶解氧不得低于计划阈值。
 - 执行安排需要 24 小时内水质，严重异常或溶解氧不足会阻断流程。
 - 实际量与计划量偏差超过 25% 时，必须提供至少 10 个字的说明。
+- 饲料批号全库唯一；类型必须与投喂计划 `feedType` 一致才会参与扣减。
+- 执行完成按实际用量，从同类型「启用且未过期」批次中按到期日升序（同日按批号入库顺序）扣减；过期、停用、类型不符或同类型启用余量合计不足时拒绝完成，整个事务回滚。
+- 每次完成的逐批次扣减明细永久保留；已完成的扣减不能修改，已发生消耗的批次禁止删除，且批号/类型/入库量锁定（可调整到期日、备注和启用状态）。
+- 并发完成同一执行时，行锁与状态机保证只成功一次、只扣减一次；`(执行, 批次)` 联合唯一索引兜底。
 - 关联了读数、计划或执行记录的养殖池不允许删除。
