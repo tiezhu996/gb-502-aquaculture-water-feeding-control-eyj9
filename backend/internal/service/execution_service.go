@@ -6,6 +6,7 @@ import (
 	"aquaculture-water-feeding-control/backend/internal/model"
 	"aquaculture-water-feeding-control/backend/internal/repository"
 	"math"
+	"strconv"
 	"time"
 
 	"gorm.io/gorm"
@@ -16,6 +17,7 @@ type ExecutionService struct {
 	plans         *repository.PlanRepository
 	ponds         *repository.PondRepository
 	readings      *repository.ReadingRepository
+	batches       *repository.FeedBatchRepository
 	audit         *AuditService
 	transactional bool
 }
@@ -25,14 +27,15 @@ func (s *ExecutionService) withinTransaction(fn func(*ExecutionService) error) e
 		scoped := &ExecutionService{
 			repo: repository.NewExecutionRepository(tx), plans: repository.NewPlanRepository(tx),
 			ponds: repository.NewPondRepository(tx), readings: repository.NewReadingRepository(tx),
-			audit: audit, transactional: true,
+			batches: repository.NewFeedBatchRepository(tx),
+			audit:   audit, transactional: true,
 		}
 		return fn(scoped)
 	})
 }
 
-func NewExecutionService(repo *repository.ExecutionRepository, plans *repository.PlanRepository, ponds *repository.PondRepository, readings *repository.ReadingRepository, audit *AuditService) *ExecutionService {
-	return &ExecutionService{repo: repo, plans: plans, ponds: ponds, readings: readings, audit: audit}
+func NewExecutionService(repo *repository.ExecutionRepository, plans *repository.PlanRepository, ponds *repository.PondRepository, readings *repository.ReadingRepository, batches *repository.FeedBatchRepository, audit *AuditService) *ExecutionService {
+	return &ExecutionService{repo: repo, plans: plans, ponds: ponds, readings: readings, batches: batches, audit: audit}
 }
 
 func (s *ExecutionService) List(query dto.PageQuery, pondID, planID uint) (dto.PageResult[model.ControlExecution], error) {
@@ -182,6 +185,9 @@ func (s *ExecutionService) Complete(id uint, input dto.CompleteExecutionInput, a
 	if err != nil {
 		return model.ControlExecution{}, WrapError(CodeInternal, "查询关联计划失败", err)
 	}
+	if err := s.consumeFeed(&execution, plan.FeedType, input.ActualAmountKg, actor); err != nil {
+		return model.ControlExecution{}, err
+	}
 	openCount, err := s.repo.CountOpenForPlanExcluding(plan.ID, execution.ID)
 	if err != nil {
 		return model.ControlExecution{}, WrapError(CodeInternal, "检查计划待执行记录失败", err)
@@ -217,6 +223,94 @@ func (s *ExecutionService) Delete(id uint, actor Actor) error {
 		return WrapError(CodeInternal, "删除执行记录失败", err)
 	}
 	return s.audit.Record(actor, "delete", "control_execution", execution.ID, execution, nil, "取消未开始的投喂安排")
+}
+
+// consumeFeed 按先到期先出（FEFO）从同类型启用批次中扣减实际用量，并写入不可变消耗明细。
+// 行锁 + 条件更新保证并发完成时不会超扣；消耗明细的唯一索引保证同一执行只扣一次。
+func (s *ExecutionService) consumeFeed(execution *model.ControlExecution, feedType string, amount float64, actor Actor) error {
+	existing, err := s.batches.ConsumptionCountForExecution(execution.ID)
+	if err != nil {
+		return WrapError(CodeInternal, "检查批次消耗明细失败", err)
+	}
+	if existing > 0 {
+		return NewError(CodeConflict, "本次执行已完成饲料扣减，不能重复提交")
+	}
+	allBatches, err := s.batches.AvailableForUpdate(feedType)
+	if err != nil {
+		return WrapError(CodeInternal, "查询启用饲料批次失败", err)
+	}
+	now := time.Now().UTC()
+	candidates := make([]model.FeedBatch, 0, len(allBatches))
+	var availableTotal float64
+	for _, batch := range allBatches {
+		if batch.IsExpired(now) {
+			continue
+		}
+		candidates = append(candidates, batch)
+		availableTotal += batch.RemainingAmountKg
+	}
+	if len(allBatches) == 0 {
+		total, err := s.batches.CountByType(feedType)
+		if err != nil {
+			return WrapError(CodeInternal, "查询饲料批次失败", err)
+		}
+		if total == 0 {
+			return NewError(CodeConflict, "没有类型为「"+feedType+"」的饲料批次，无法完成投喂")
+		}
+		return NewError(CodeConflict, "类型「"+feedType+"」的批次均已停用，无法完成投喂")
+	}
+	if len(candidates) == 0 {
+		return NewError(CodeConflict, "类型「"+feedType+"」的启用批次均已过期，无法完成投喂")
+	}
+	if availableTotal+1e-6 < amount {
+		return NewError(CodeConflict, "同类型启用且未过期批次余量不足，无法完成投喂")
+	}
+
+	remaining := amount
+	consumedBatches := make([]model.FeedBatch, 0, len(candidates))
+	consumptions := make([]model.FeedConsumption, 0, len(candidates))
+	for _, batch := range candidates {
+		if remaining <= 1e-9 {
+			break
+		}
+		take := batch.RemainingAmountKg
+		if take > remaining {
+			take = remaining
+		}
+		rows, err := s.batches.Deduct(batch.ID, take)
+		if err != nil {
+			return WrapError(CodeInternal, "扣减批次余量失败", err)
+		}
+		if rows == 0 {
+			// 余量在锁定后仍不足（被并发事务先行扣减），整单回滚。
+			return NewError(CodeConflict, "批次「"+batch.BatchNumber+"」余量不足，无法完成投喂")
+		}
+		batch.RemainingAmountKg -= take
+		batchCopy := batch
+		consumption := model.FeedConsumption{
+			ControlExecutionID: execution.ID,
+			FeedBatchID:        batch.ID,
+			FeedBatch:          &batchCopy,
+			FeedType:           feedType,
+			AmountKg:           take,
+		}
+		if err := s.batches.CreateConsumption(&consumption); err != nil {
+			return WrapError(CodeInternal, "写入批次消耗明细失败", err)
+		}
+		consumedBatches = append(consumedBatches, batch)
+		consumptions = append(consumptions, consumption)
+		remaining -= take
+	}
+	if remaining > 1e-6 {
+		return NewError(CodeConflict, "同类型启用且未过期批次余量不足，无法完成投喂")
+	}
+	execution.Consumptions = consumptions
+	for _, batch := range consumedBatches {
+		if err := s.audit.Record(actor, "consume", "feed_batch", batch.ID, nil, batch, "执行 #"+strconv.Itoa(int(execution.ID))+" 按先到期先出扣减饲料"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *ExecutionService) validateExecution(pondID, planID uint, amount float64, scheduledAt time.Time, excludedID uint) (model.FeedingPlan, model.Pond, model.WaterReading, error) {

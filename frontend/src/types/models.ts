@@ -77,6 +77,35 @@ export interface ControlExecution extends BaseModel {
   weather: string
   oxygenSnapshot: number
   feedback: string
+  consumptions?: FeedConsumption[]
+}
+
+export interface FeedBatch extends BaseModel {
+  batchNumber: string
+  feedType: string
+  inboundAmountKg: number
+  remainingKg: number
+  expiryDate: string
+  enabled: boolean
+  notes: string
+}
+
+export interface FeedConsumption extends BaseModel {
+  controlExecutionId: number
+  controlExecution?: ControlExecution
+  feedBatchId: number
+  feedBatch?: FeedBatch
+  feedType: string
+  amountKg: number
+}
+
+export interface FeedBatchInput {
+  batchNumber: string
+  feedType: string
+  inboundAmountKg: number
+  expiryDate: string
+  enabled?: boolean
+  notes: string
 }
 
 export interface AuditLog extends BaseModel {

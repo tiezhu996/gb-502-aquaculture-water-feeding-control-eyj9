@@ -36,6 +36,7 @@ func main() {
 	readingRepo := repository.NewReadingRepository(db)
 	planRepo := repository.NewPlanRepository(db)
 	executionRepo := repository.NewExecutionRepository(db)
+	feedBatchRepo := repository.NewFeedBatchRepository(db)
 	auditRepo := repository.NewAuditRepository(db)
 
 	auditService := service.NewAuditService(auditRepo)
@@ -43,7 +44,8 @@ func main() {
 	pondService := service.NewPondService(pondRepo, auditService)
 	readingService := service.NewReadingService(readingRepo, pondRepo, auditService)
 	planService := service.NewPlanService(planRepo, pondRepo, readingRepo, auditService)
-	executionService := service.NewExecutionService(executionRepo, planRepo, pondRepo, readingRepo, auditService)
+	executionService := service.NewExecutionService(executionRepo, planRepo, pondRepo, readingRepo, feedBatchRepo, auditService)
+	feedBatchService := service.NewFeedBatchService(feedBatchRepo, auditService)
 
 	handlers := router.Handlers{
 		Auth:       handler.NewAuthHandler(authService),
@@ -52,6 +54,7 @@ func main() {
 		Readings:   handler.NewReadingHandler(readingService),
 		Plans:      handler.NewPlanHandler(planService),
 		Executions: handler.NewExecutionHandler(executionService),
+		Batches:    handler.NewFeedBatchHandler(feedBatchService),
 		Audit:      handler.NewAuditHandler(auditService),
 	}
 	engine := router.New(cfg, redisClient, authService, handlers)

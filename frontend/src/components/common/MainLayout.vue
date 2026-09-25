@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Collection, DataAnalysis, DocumentChecked, Fold, List, SwitchButton, Watermelon } from '@element-plus/icons-vue'
+import { Collection, DataAnalysis, DocumentChecked, Fold, Goods, List, SwitchButton, Watermelon } from '@element-plus/icons-vue'
 import { useAuth } from '@/hooks/useAuth'
 
 const route = useRoute()
@@ -9,7 +9,7 @@ const router = useRouter()
 const collapsed = ref(false)
 const { user, canReview, logout } = useAuth()
 const titles: Record<string, string> = {
-  '/ponds': '养殖池工作台', '/readings': '水质读数', '/plans': '投喂计划', '/executions': '执行反馈', '/audit': '操作审计',
+  '/ponds': '养殖池工作台', '/readings': '水质读数', '/plans': '投喂计划', '/batches': '饲料批次台账', '/executions': '执行反馈', '/audit': '操作审计',
 }
 const title = computed(() => titles[route.path] || '水域智控')
 
@@ -30,6 +30,7 @@ function signOut() {
         <router-link to="/ponds"><Collection /><span>养殖池</span></router-link>
         <router-link to="/readings"><DataAnalysis /><span>水质读数</span></router-link>
         <router-link to="/plans"><DocumentChecked /><span>投喂计划</span></router-link>
+        <router-link to="/batches"><Goods /><span>饲料批次</span></router-link>
         <router-link to="/executions"><List /><span>执行反馈</span></router-link>
         <router-link v-if="canReview()" to="/audit"><Collection /><span>操作审计</span></router-link>
       </nav>

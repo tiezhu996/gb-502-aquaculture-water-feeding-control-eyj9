@@ -1,6 +1,6 @@
 # 水产养殖水质与投喂控制
 
-`aquaculture-water-feeding-control` 是面向规模化水产养殖场的 Go 全栈作业系统。它把养殖池、水质读数、投喂计划和现场执行连成可审计流程，并根据最新水质、天气窗口和生长阶段生成投喂建议。
+`aquaculture-water-feeding-control` 是面向规模化水产养殖场的 Go 全栈作业系统。它把养殖池、水质读数、投喂计划、饲料批次和现场执行连成可审计流程，并根据最新水质、天气窗口和生长阶段生成投喂建议。
 
 ## 功能范围
 
@@ -8,7 +8,8 @@
 - 水质风险：录入溶解氧、水温、pH、氨氮和浊度，自动判定正常/预警/严重并要求人工确认异常。
 - 投喂计划：草稿修订自动升版，支持提交、批准和撤销；批准时会校验水质与溶解氧阈值。
 - 投喂建议：结合已批准计划、24 小时内水质、天气和生长阶段，输出正常投喂、减量或暂停。
-- 执行反馈：仅允许已批准计划进入执行，记录实际量、现场溶解氧与反馈。
+- 执行反馈：仅允许已批准计划进入执行，记录实际量、现场溶解氧与反馈；完成时按先到期先出（FEFO）自动扣减饲料批次。
+- 饲料批次台账：登记批号、类型、入库量、到期日和启用状态，实时呈现剩余量与临期/过期标记，并可反查每批饲料的关联投喂。
 - 安全与审计：JWT、RBAC、请求 ID、全局异常恢复、Redis 限流和实体变更前后快照。
 
 ## 快速启动
@@ -52,8 +53,9 @@ docker compose down
 2. 在“水质读数”录入当前指标；如判定异常，先进行现场复核和确认。
 3. 在“投喂计划”创建草稿并提交，主管检查最新水质后批准。
 4. 已批准计划可输入天气窗口生成实时投喂建议。
-5. 在“执行反馈”安排、开始并提交实际结果。完成后计划进入 `executed`。
-6. 管理员或主管可在“操作审计”查看人员、原因、请求 ID 和变更快照。
+5. 在“饲料批次”登记入库：批号、饲料类型（须与计划一致）、入库量、到期日和启用状态。
+6. 在“执行反馈”安排、开始并提交实际结果。系统按同类型启用批次先到期先出扣减；过期、停用、类型不符或余量不足会拒绝完成。完成后计划进入 `executed`。
+7. 管理员或主管可在“操作审计”查看人员、原因、请求 ID 和变更快照。
 
 ## 项目结构
 
@@ -71,7 +73,7 @@ docker compose down
 │   ├── api/ stores/ types/       # 请求层、Pinia 状态与类型
 │   ├── components/common/       # 共享工作台组件
 │   ├── hooks/ router/ utils/     # 权限、查询参数、守卫和工具
-│   └── pages/                   # 五个业务页与登录页
+│   └── pages/                   # 六个业务页与登录页
 └── docker-compose.yml
 ```
 
@@ -92,6 +94,7 @@ docker compose down
 | `WaterReading` | `model/water_reading.go` | `dto/reading.go` | `repository/reading_repository.go` | `service/reading_service.go` | `handler/reading_handler.go` | `api/readings.ts` | `pages/ReadingsPage.vue` |
 | `FeedingPlan` | `model/feeding_plan.go` | `dto/plan.go` | `repository/plan_repository.go` | `service/plan_service.go` | `handler/plan_handler.go` | `api/plans.ts` | `pages/PlansPage.vue` |
 | `ControlExecution` | `model/control_execution.go` | `dto/execution.go` | `repository/execution_repository.go` | `service/execution_service.go` | `handler/execution_handler.go` | `api/executions.ts` | `pages/ExecutionsPage.vue` |
+| `FeedBatch` / `FeedConsumption` | `model/feed_batch.go`、`model/feed_consumption.go` | `dto/feed_batch.go` | `repository/feed_batch_repository.go` | `service/feed_batch_service.go`、FEFO 扣减在 `service/execution_service.go` | `handler/feed_batch_handler.go` | `api/feedBatches.ts` | `pages/BatchesPage.vue` |
 
 `RiskTag` 在养殖池和水质页共用，`PlanDrawer` 在计划和执行页共用。`StatusBadge`、`MetricCard`、`ConfirmDialog` 位于 `frontend/src/components/common/`；`useAuth`、`useQueryParams` 位于 `frontend/src/hooks/`。
 
@@ -109,7 +112,10 @@ docker compose down
 | `PATCH` | `/api/plans/:id/revoke` | 撤销待审或已批准计划 |
 | `GET` | `/api/plans/recommendation?pondId=1&weather=晴朗` | 生成投喂建议 |
 | `GET/POST` | `/api/executions` | 执行记录列表/安排 |
-| `PATCH` | `/api/executions/:id/complete` | 提交实际数量与反馈 |
+| `PATCH` | `/api/executions/:id/complete` | 提交实际数量与反馈，按 FEFO 扣减批次 |
+| `GET/POST` | `/api/feed-batches` | 饲料批次列表/登记（支持 `feedType`、`enabled` 过滤） |
+| `GET/PUT` | `/api/feed-batches/:id` | 批次详情/更新批号、入库量、到期日、启用状态 |
+| `GET` | `/api/feed-batches/:id/consumptions` | 查询批次关联的投喂消耗明细 |
 | `GET` | `/api/audit` | 管理员/主管查看审计记录 |
 
 错误统一为 `{"error":{"code":"...","message":"...","requestId":"..."}}`，响应头同时包含 `X-Request-ID`。
@@ -147,4 +153,9 @@ docker compose config --quiet
 - 计划批准需要运行中养殖池和最新水质，溶解氧不得低于计划阈值。
 - 执行安排需要 24 小时内水质，严重异常或溶解氧不足会阻断流程。
 - 实际量与计划量偏差超过 25% 时，必须提供至少 10 个字的说明。
+- 饲料批次登记批号唯一、到期日不得早于当天；到期日当天仍可使用，次日起视为过期。
+- 执行完成时按实际用量从同类型启用、未过期批次中先到期先出（FEFO）跨批次扣减，并保留每条消耗明细。
+- 批次过期、停用、饲料类型与计划不符，或同类型可用批次余量合计不足时，拒绝完成执行且不产生任何扣减。
+- 消耗明细不可修改、不可补录；已完成执行的扣减不能回滚。批次已有消耗时不能改类型，入库量只能补登增加。
+- 同一执行的批次扣减有唯一约束，两人同时完成同一执行只有一次成功（行锁 + 条件更新 + 终态校验）。
 - 关联了读数、计划或执行记录的养殖池不允许删除。

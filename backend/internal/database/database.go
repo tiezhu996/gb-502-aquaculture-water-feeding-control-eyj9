@@ -31,6 +31,8 @@ func Open(databaseURL, environment string) (*gorm.DB, error) {
 		&model.WaterReading{},
 		&model.FeedingPlan{},
 		&model.ControlExecution{},
+		&model.FeedBatch{},
+		&model.FeedConsumption{},
 		&model.AuditLog{},
 	); err != nil {
 		return nil, fmt.Errorf("migrate database: %w", err)

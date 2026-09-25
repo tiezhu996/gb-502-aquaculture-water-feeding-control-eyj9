@@ -170,3 +170,10 @@ h1, h2, h3, h4, p { margin-top: 0; }
   .el-drawer { width: min(100%, 440px) !important; }
   .panel-toolbar > .el-button { width: 100%; }
 }
+
+.fefo-panel { margin-top: 4px; padding: 12px; border: 1px solid var(--line); border-radius: 7px; background: #f7faf9; }
+.fefo-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fefo-head strong { font-size: 13px; color: #1f3733; }
+.fefo-note { display: block; margin-top: 8px; color: #768883; }
+.consume-list { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 2px; }
+.stock-zero { color: #c45656; font-weight: 600; }

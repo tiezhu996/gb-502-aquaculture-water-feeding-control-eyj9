@@ -20,6 +20,7 @@ type Handlers struct {
 	Readings   *handler.ReadingHandler
 	Plans      *handler.PlanHandler
 	Executions *handler.ExecutionHandler
+	Batches    *handler.FeedBatchHandler
 	Audit      *handler.AuditHandler
 }
 
@@ -88,6 +89,14 @@ func New(cfg config.Config, redisClient *redis.Client, auth *service.AuthService
 	executionWrite.PUT("/:id", h.Executions.Update)
 	executionWrite.PATCH("/:id/complete", h.Executions.Complete)
 	executionWrite.DELETE("/:id", h.Executions.Delete)
+
+	protected.GET("/feed-batches", h.Batches.List)
+	protected.GET("/feed-batches/:id", h.Batches.Get)
+	protected.GET("/feed-batches/:id/consumptions", h.Batches.Consumptions)
+	batchWrite := protected.Group("/feed-batches")
+	batchWrite.Use(middleware.RequireRoles("admin", "manager", "operator"))
+	batchWrite.POST("", h.Batches.Create)
+	batchWrite.PUT("/:id", h.Batches.Update)
 
 	audit := protected.Group("/audit")
 	audit.Use(middleware.RequireRoles("admin", "manager"))

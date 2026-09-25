@@ -21,4 +21,5 @@ type ControlExecution struct {
 	Weather         string                    `gorm:"size:120" json:"weather"`
 	OxygenSnapshot  float64                   `json:"oxygenSnapshot"`
 	Feedback        string                    `gorm:"type:text" json:"feedback"`
+	Consumptions    []FeedConsumption         `gorm:"foreignKey:ControlExecutionID" json:"consumptions,omitempty"`
 }

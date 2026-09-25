@@ -5,21 +5,23 @@ import { CircleCheck, Clock, List, Plus, VideoPlay } from '@element-plus/icons-v
 import { executionApi } from '@/api/executions'
 import { planApi } from '@/api/plans'
 import { pondApi } from '@/api/ponds'
+import { feedBatchApi } from '@/api/feedBatches'
 import MetricCard from '@/components/common/MetricCard.vue'
 import StatusBadge from '@/components/common/StatusBadge.vue'
 import PlanDrawer from '@/components/common/PlanDrawer.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import { useAuth } from '@/hooks/useAuth'
 import { useQueryParams } from '@/hooks/useQueryParams'
-import type { ControlExecution, ExecutionInput, FeedingPlan, Pond } from '@/types/models'
+import type { ControlExecution, ExecutionInput, FeedBatch, FeedingPlan, Pond } from '@/types/models'
 import { errorMessage } from '@/utils/errors'
-import { formatDateTime, formatNumber, toISO, toLocalInput } from '@/utils/format'
+import { formatDate, formatDateTime, formatNumber, toISO, toLocalInput } from '@/utils/format'
 
 const { canOperate } = useAuth()
 const { params } = useQueryParams({ status: '', pondId: '', page: 1 })
 const executions = ref<ControlExecution[]>([])
 const ponds = ref<Pond[]>([])
 const plans = ref<FeedingPlan[]>([])
+const batches = ref<FeedBatch[]>([])
 const total = ref(0)
 const loading = ref(false)
 const saving = ref(false)
@@ -38,18 +40,50 @@ const runningCount = computed(() => executions.value.filter((item) => item.statu
 const completedAmount = computed(() => executions.value.filter((item) => item.status === 'completed').reduce((sum, item) => sum + item.actualAmountKg, 0))
 const availablePlans = computed(() => plans.value.filter((plan) => plan.status === 'approved' && (!form.pondId || plan.pondId === form.pondId)))
 
+function expiryEnd(batch: FeedBatch): number {
+  const end = new Date(batch.expiryDate)
+  end.setUTCHours(23, 59, 59, 999)
+  return end.getTime()
+}
+
+function usableBatches(feedType: string): FeedBatch[] {
+  return batches.value
+    .filter((batch) => batch.enabled && batch.feedType === feedType && expiryEnd(batch) >= Date.now() && batch.remainingKg > 0)
+    .sort((a, b) => expiryEnd(a) - expiryEnd(b) || a.id - b.id)
+}
+
+const targetFeedType = computed(() => {
+  if (!target.value) return ''
+  return target.value.feedingPlan?.feedType || plans.value.find((plan) => plan.id === target.value?.feedingPlanId)?.feedType || ''
+})
+
+const fefoAllocation = computed(() => {
+  if (!targetFeedType.value || !(completion.actualAmountKg > 0)) return [] as { batch: FeedBatch; take: number; left: number }[]
+  let remaining = completion.actualAmountKg
+  return usableBatches(targetFeedType.value).map((batch) => {
+    const take = Math.min(batch.remainingKg, Math.max(remaining, 0))
+    remaining -= take
+    return { batch, take, left: batch.remainingKg - take }
+  }).filter((item) => item.take > 0)
+})
+
+const fefoTotalAvailable = computed(() => usableBatches(targetFeedType.value).reduce((sum, batch) => sum + batch.remainingKg, 0))
+const fefoShortage = computed(() => completion.actualAmountKg > fefoTotalAvailable.value)
+
 async function load() {
   loading.value = true
   try {
-    const [result, pondResult, planResult] = await Promise.all([
+    const [result, pondResult, planResult, batchResult] = await Promise.all([
       executionApi.list({ page: Number(params.page), pageSize: 20, status: String(params.status), pondId: Number(params.pondId) || undefined }),
       pondApi.list({ page: 1, pageSize: 100 }),
       planApi.list({ page: 1, pageSize: 100 }),
+      feedBatchApi.list({ page: 1, pageSize: 100 }),
     ])
     executions.value = result.items
     total.value = result.total
     ponds.value = pondResult.items
     plans.value = planResult.items
+    batches.value = batchResult.items
   } catch (error) {
     ElMessage.error(errorMessage(error))
   } finally {
@@ -117,6 +151,10 @@ async function complete() {
     ElMessage.warning('请完整填写实际数量、现场溶解氧和反馈')
     return
   }
+  if (fefoShortage.value) {
+    ElMessage.error('同类型启用批次余量不足，提交将被拒绝，请先补充批次登记')
+    return
+  }
   saving.value = true
   try {
     await executionApi.complete(target.value.id, { ...completion })
@@ -150,6 +188,14 @@ function showPlan(execution: ControlExecution) {
   drawerOpen.value = true
 }
 
+function openBatchState(row: ControlExecution): { remaining: number; tone: 'success' | 'warning' | 'danger' } {
+  const feedType = row.feedingPlan?.feedType || plans.value.find((plan) => plan.id === row.feedingPlanId)?.feedType || ''
+  const remaining = usableBatches(feedType).reduce((sum, batch) => sum + batch.remainingKg, 0)
+  if (remaining >= row.plannedAmountKg) return { remaining, tone: 'success' }
+  if (remaining > 0) return { remaining, tone: 'warning' }
+  return { remaining, tone: 'danger' }
+}
+
 let timer: number | undefined
 watch(params, () => { window.clearTimeout(timer); timer = window.setTimeout(load, 200) }, { deep: true })
 onMounted(load)
@@ -175,6 +221,28 @@ onMounted(load)
         <el-table-column label="养殖池 / 计划" min-width="230"><template #default="{ row }"><div class="primary-cell"><strong>{{ row.pond?.name }}</strong><button class="inline-link" @click="showPlan(row)">{{ row.feedingPlan?.name }} · v{{ row.feedingPlan?.version }}</button></div></template></el-table-column>
         <el-table-column label="安排时间" min-width="165"><template #default="{ row }">{{ formatDateTime(row.scheduledAt) }}</template></el-table-column>
         <el-table-column label="计划 / 实际" min-width="130"><template #default="{ row }">{{ row.plannedAmountKg }} / {{ row.actualAmountKg || '—' }} kg</template></el-table-column>
+        <el-table-column label="饲料 / 本批剩余" min-width="220"><template #default="{ row }">
+          <div v-if="row.status === 'completed'">
+            <div class="primary-cell"><small>{{ row.feedingPlan?.feedType }}</small></div>
+            <div v-if="row.consumptions?.length" class="consume-list">
+              <el-popover v-for="item in row.consumptions" :key="item.id" placement="top" :width="240" trigger="hover">
+                <template #reference><el-tag size="small" type="success" effect="plain" round style="margin: 2px">{{ item.feedBatch?.batchNumber }} · {{ formatNumber(item.amountKg, 3) }}kg</el-tag></template>
+                <div style="font-size: 12px; line-height: 1.8">
+                  <div>批号：{{ item.feedBatch?.batchNumber }}</div>
+                  <div>类型：{{ item.feedType }}</div>
+                  <div>到期日：{{ formatDate(item.feedBatch?.expiryDate) }}</div>
+                  <div>当前剩余：{{ formatNumber(item.feedBatch?.remainingKg ?? 0) }} kg</div>
+                  <div>本次消耗：{{ formatNumber(item.amountKg, 3) }} kg</div>
+                </div>
+              </el-popover>
+            </div>
+            <small v-else>无消耗明细</small>
+          </div>
+          <template v-else>
+            <div class="primary-cell"><small>{{ row.feedingPlan?.feedType }}</small></div>
+            <el-tag size="small" :type="openBatchState(row).tone" effect="plain" round>可用剩余 {{ formatNumber(openBatchState(row).remaining) }} kg</el-tag>
+          </template>
+        </template></el-table-column>
         <el-table-column label="天气" prop="weather" min-width="130" show-overflow-tooltip />
         <el-table-column label="操作人" prop="operator" width="110" />
         <el-table-column label="状态" width="110"><template #default="{ row }"><StatusBadge :status="row.status" /></template></el-table-column>
@@ -197,12 +265,28 @@ onMounted(load)
       </el-form>
       <template #footer><el-button @click="editorOpen = false">取消</el-button><el-button type="primary" :loading="saving" @click="create">确认安排</el-button></template>
     </el-dialog>
-    <el-dialog v-model="completeOpen" title="提交执行反馈" width="580px">
+    <el-dialog v-model="completeOpen" title="提交执行反馈" width="620px">
       <el-form label-position="top" class="form-grid">
         <el-form-item label="实际投喂量（kg）"><el-input-number v-model="completion.actualAmountKg" :min="0.1" :step="0.5" /></el-form-item>
         <el-form-item label="现场溶解氧（mg/L）"><el-input-number v-model="completion.oxygenSnapshot" :min="0" :max="30" :step="0.1" /></el-form-item>
         <el-form-item label="执行反馈" class="form-span"><el-input v-model="completion.feedback" type="textarea" :rows="4" placeholder="记录摄食、设备与异常情况" /></el-form-item>
       </el-form>
+      <div class="fefo-panel">
+        <template v-if="targetFeedType">
+          <div class="fefo-head"><strong>先到期先出扣减预览（{{ targetFeedType }}）</strong>
+            <el-tag size="small" :type="fefoShortage ? 'danger' : 'success'" effect="plain" round>可用合计 {{ formatNumber(fefoTotalAvailable) }} kg</el-tag>
+          </div>
+          <el-alert v-if="fefoShortage" type="error" :closable="false" show-icon title="同类型启用且未过期批次余量不足，完成将被拒绝" style="margin: 8px 0" />
+          <el-alert v-else-if="!fefoAllocation.length" type="warning" :closable="false" show-icon title="没有匹配的启用批次，请先在饲料批次页登记" style="margin: 8px 0" />
+          <el-table v-if="fefoAllocation.length" :data="fefoAllocation" size="small" border>
+            <el-table-column label="批号"><template #default="{ row }">{{ row.batch.batchNumber }}</template></el-table-column>
+            <el-table-column label="到期日" width="110"><template #default="{ row }">{{ formatDate(row.batch.expiryDate) }}</template></el-table-column>
+            <el-table-column label="本次扣减" width="110"><template #default="{ row }">{{ formatNumber(row.take, 3) }} kg</template></el-table-column>
+            <el-table-column label="扣后剩余" width="110"><template #default="{ row }">{{ formatNumber(row.left, 3) }} kg</template></el-table-column>
+          </el-table>
+          <small class="fefo-note">过期、停用、类型不符或余量不足的批次不会参与扣减；提交后扣减不可修改。</small>
+        </template>
+      </div>
       <template #footer><el-button @click="completeOpen = false">取消</el-button><el-button type="primary" :loading="saving" @click="complete">完成并留痕</el-button></template>
     </el-dialog>
     <ConfirmDialog v-model="deleteOpen" title="删除执行安排" message="只能删除尚未开始的执行安排，确认继续？" danger :loading="saving" @confirm="remove" />
